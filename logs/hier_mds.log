@@ -1,0 +1,101 @@
+INFO:root:Encoder objects: ModuleList(
+  (0): TransformerEncoder(
+    (layers): ModuleList(
+      (0): TransformerEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): Linear(in_features=128, out_features=128, bias=True)
+        )
+        (linear1): Linear(in_features=128, out_features=2048, bias=True)
+        (dropout): Dropout(p=0.1, inplace=False)
+        (linear2): Linear(in_features=2048, out_features=128, bias=True)
+        (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.1, inplace=False)
+        (dropout2): Dropout(p=0.1, inplace=False)
+      )
+      (1): TransformerEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): Linear(in_features=128, out_features=128, bias=True)
+        )
+        (linear1): Linear(in_features=128, out_features=2048, bias=True)
+        (dropout): Dropout(p=0.1, inplace=False)
+        (linear2): Linear(in_features=2048, out_features=128, bias=True)
+        (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.1, inplace=False)
+        (dropout2): Dropout(p=0.1, inplace=False)
+      )
+    )
+  )
+  (1): TransformerEncoder(
+    (layers): ModuleList(
+      (0): TransformerGlobalEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): Linear(in_features=128, out_features=128, bias=True)
+        )
+        (linear1): Linear(in_features=128, out_features=2048, bias=True)
+        (dropout): Dropout(p=0.1, inplace=False)
+        (linear2): Linear(in_features=2048, out_features=128, bias=True)
+        (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.1, inplace=False)
+        (dropout2): Dropout(p=0.1, inplace=False)
+        (multi_head_pooling): MultiHeadPooling(
+          (linear_keys): Linear(in_features=128, out_features=4, bias=True)
+          (linear_values): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (dropout): Dropout(p=0.1, inplace=False)
+          (final_linear): Linear(in_features=128, out_features=128, bias=True)
+        )
+      )
+      (1): TransformerGlobalEncoderLayer(
+        (self_attn): MultiheadAttention(
+          (out_proj): Linear(in_features=128, out_features=128, bias=True)
+        )
+        (linear1): Linear(in_features=128, out_features=2048, bias=True)
+        (dropout): Dropout(p=0.1, inplace=False)
+        (linear2): Linear(in_features=2048, out_features=128, bias=True)
+        (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+        (dropout1): Dropout(p=0.1, inplace=False)
+        (dropout2): Dropout(p=0.1, inplace=False)
+        (multi_head_pooling): MultiHeadPooling(
+          (linear_keys): Linear(in_features=128, out_features=4, bias=True)
+          (linear_values): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (dropout): Dropout(p=0.1, inplace=False)
+          (final_linear): Linear(in_features=128, out_features=128, bias=True)
+        )
+      )
+    )
+  )
+)
+INFO:root:Initializing random embeddings
+INFO:root:Using cuda:0
+INFO:root:Beginning training for 2 epochs, batch size 2
+WARNING:root:Implement use of query emb!
+INFO:root:seq len: 4, batch: 2, docs: 3, h: 128
+INFO:root:torch.Size([4, 6, 128])
+INFO:root:torch.Size([4, 2, 128])
+DEBUG:root:dob emb size: torch.Size([4, 6, 128])
+DEBUG:root:dob emb size after pos: torch.Size([4, 6, 128])
+INFO:root:Contiguous: True
+INFO:root:passing input through enc
+INFO:root:cuda:0
+DEBUG:root:layer type: local
+DEBUG:root:layer type: global
+DEBUG:root:local doc emb size after reshaping torch.Size([4, 6, 128]):
+INFO:root:Using global transformer
+INFO:root:input_size torch.Size([4, 6, 128])
+INFO:root:torch.Size([4, 6, 4])
+INFO:root:torch.Size([4, 6, 128])
+INFO:root:scores torch.Size([24, 4, 1])
+INFO:root:values torch.Size([24, 4, 32])
+INFO:root:Contiguous: True
+INFO:root:scores torch.Size([24, 4, 32])
+INFO:root:doc representation torch.Size([24, 32])
+INFO:root:doc representation torch.Size([3, 2, 128])
+INFO:root:doc representation torch.Size([3, 2, 128])
+INFO:root:Pooling size torch.Size([3, 2, 128])
+INFO:root:self attn torch.Size([3, 2, 128])
+INFO:root:Pooling size torch.Size([3, 2, 128])

@@ -1,0 +1,165 @@
+import logging
+import torch
+from torch import nn
+
+class MultiHeadPooling(nn.Module):
+    """
+    Multi head pooling layer
+    This is used to aggregate token representations (input len * num_docs, batch size, hidden_dim)
+    that are passed from the local encoder to the global encoder layer
+    See https://github.com/nlpyang/hiersumm/blob/master/src/abstractive/attn.py for the implementation
+    this code uses as reference
+    """
+
+    def __init__(self, max_seq_len, max_docs, batch_size, hidden_dim, n_heads, dropout):
+        assert hidden_dim % n_heads == 0, "Hidden dimension is not divisible by number of heads"
+        self.dim_per_head = int(hidden_dim / n_heads)
+        self.hidden_dim = hidden_dim
+        self.max_seq_len = max_seq_len
+        self.max_docs = max_docs
+        self.batch_size = batch_size
+        super(MultiHeadPooling, self).__init__()
+        self.n_heads = n_heads
+        self.linear_keys = nn.Linear(self.hidden_dim, self.n_heads)
+        self.linear_values = nn.Linear(self.hidden_dim, self.n_heads * self.dim_per_head)
+        self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+        self.final_linear = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+    def forward(self, key, value, mask=None):
+        """
+        Forward pass for Multi Head Pooling used in the global encoder layer
+        Expects inputs of shape (max_seq_len, batch_size * max_docs, hidden_dim)
+        """
+
+        def shape(x, dim=self.dim_per_head):
+            """  projection """
+            return x.view(self.batch_size, -1, self.n_heads, dim) \
+                .transpose(1, 2)
+
+        def unshape(x, dim=self.dim_per_head):
+            """  compute context """
+            return x.transpose(1, 2).contiguous() \
+                .view(self.batch_size, -1, self.n_heads * dim)
+
+        # Compute attention between each head
+        scores = self.linear_keys(key)
+        logging.info(scores.size())
+        values = self.linear_values(value)
+        logging.info(value.size())
+        # 0 index contains max seq length
+        # Reshape scores and values so that
+        # shape(scores) == (seq len, head for each doc for each sample, score of dimension 1)
+        scores = scores.view(
+            self.max_seq_len, self.max_docs * self.batch_size * self.n_heads, 1
+            ).transpose(0,1)
+        logging.info("scores %s", scores.size())
+        # Reshape values so that
+        # shape(values) == (seq len, head for each doc for each sample, vector of size head dim)
+        values = values.view(
+            self.max_seq_len, self.max_docs * self.batch_size * self.n_heads, self.dim_per_head
+            ).transpose(0,1)
+        logging.info("values %s", values.size())
+
+        logging.info("Contiguous: %s", value.is_contiguous())
+        # Take softmax of scores to get a distribution for each head
+        attn = self.softmax(scores)
+        drop_attn = self.dropout(attn)
+        # Weight the embedding for each head
+        scores = scores * values
+        #scores = torch.matmul(scores, values.transpose(1, 2))
+        logging.info("scores %s", scores.size())
+
+        # TODO: Mask stuff
+        if mask is not None:
+            mask = mask.unsqueeze(1).expand_as(scores)
+            scores = scores.masked_fill(mask, -1e18)
+
+        # 3) Apply attention dropout and compute context vectors.
+        # Sum the weights for each head in each doc in an example,
+        # resulting in a context vector of size (max docs, n heads, dim, of heads)
+        context = torch.sum(scores, dim=1)
+        logging.info("doc representation %s", context.size())
+        # Then stack the heads so that the final tensor will be of size (max docs, batch size, dimension)
+        context = context.view(self.max_docs, self.batch_size, self.n_heads * self.dim_per_head)
+        logging.info("doc representation %s", context.size())
+        output = self.final_linear(context)
+        logging.info("doc representation %s", output.size())
+        assert output.size() == torch.Size([self.max_docs, self.batch_size, self.hidden_dim])
+        return output
+
+
+class MMR():
+    """
+    Class for computing Maximal Marginal Relevance.
+    Code from https://github.com/Alex-Fabbri/Multi-News/blob/master/code/Hi_MAP/onmt/encoders/decoder.py
+    """
+    def _init_mmr(self,dim):
+        # for sentence and summary distance.. This is defined as sim 1
+        self.mmr_W = nn.Linear(dim, dim, bias=False).cuda() # 512*512
+
+    def _run_mmr(self,sent_encoder,sent_decoder,src_sents, input_step):
+        '''
+        # sent_encoder: size (sent_len=9,batch=2,dim=512)
+        # sent_decoder: size (sent_len=1,batch=2,dim=512)
+        # src_sents: size (batch=2,sent_len=9)
+        function to calculate mmr
+        :param sent_encoder:
+        :param sent_decoder:
+        :param src_sents:
+        :return:
+        '''
+        pdist = nn.PairwiseDistance(p=2)
+        sent_decoder=sent_decoder.permute(1,0,2) # (2,1,512)
+
+        scores =[]
+        # define sent matrix and current vector distance as the Euclidean distance
+        for sent in sent_encoder: # iterate over each batch sample
+            # distance: https://pytorch.org/docs/stable/_modules/torch/nn/modules/distance.html
+
+            # import pdb;
+            # pdb.set_trace()
+
+            # sim1=torch.sum(pdist(sent_encoder.permute(1,0,2),sent.unsqueeze(1)),1).unsqueeze(1)  # -> this is sim2 on my equation, note this is distance!
+
+            sim1 = 1 - torch.mean(pdist(sent_encoder.permute(1, 0, 2), sent.unsqueeze(1)), 1).unsqueeze(1) # this is a similarity function
+            # sim1 shape: (batch_size,1)
+
+            sim2=torch.bmm(self.mmr_W(sent_decoder),sent.unsqueeze(2)).squeeze(2) # (2,1) -> this is sim1 on my equation
+
+            # scores.append(sim1-sim2)
+            scores.append(sim2 - sim1)
+
+
+        sent_ranking_att = torch.t(torch.cat(scores,1)) #(sent_len=9,batch_size)
+        sent_ranking_att = torch.softmax(sent_ranking_att, dim=0).permute(1,0)  #(sent_len=9,batch_size)
+        # scores is a list of score (sent_len=9, tensor shape (batch_size, 1))
+        mmr_among_words = [] # should be (batch=2,input_step=200)
+        for batch_id in range(sent_ranking_att.size()[0]):
+            # iterate each batch, create zero weight on the input steps
+            # mmr= torch.zeros([input_step], dtype=torch.float32).cuda()
+
+            tmp = []
+            for id,position in enumerate(src_sents[batch_id]):
+
+                for x in range(position):
+                    tmp.append(sent_ranking_att[batch_id][id])
+
+
+            mmr = torch.stack(tmp) # make to 1-d
+
+
+            if len(mmr) < input_step: # pad with 0
+                tmp = torch.zeros(input_step - len(mmr)).float().cuda()
+                # for x in range(input_step-len(mmr)):
+                mmr = torch.cat((mmr, tmp), 0)
+            else:
+                mmr = mmr[:input_step]
+
+            mmr_among_words.append(mmr.unsqueeze(0))
+
+        mmr_among_words = torch.cat(mmr_among_words,0)
+
+        # shape: (batch=2, input_step=200)
+
+        return mmr_among_words
