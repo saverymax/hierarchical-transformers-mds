@@ -42,9 +42,8 @@ class MultiHeadPooling(nn.Module):
         # and the layer for the values will be of hidden dim x dim of heads
         values = self.linear_values(value)
         logging.info(value.size())
-        # 0 index contains max seq length
         # Reshape scores and values so that
-        # size(scores) == (seq len, score for each head for each doc for each sample
+        # shape(scores) == (seq len, score for each head for each doc for each sample)
         scores = scores.view(
             self.max_seq_len, self.max_docs * self.batch_size * self.n_heads
             ).unsqueeze(-1)
@@ -57,14 +56,12 @@ class MultiHeadPooling(nn.Module):
         logging.info("values %s", values.size())
 
         logging.info("Contiguous: %s", value.is_contiguous())
-        # Take softmax of scores to get a distribution for each head
+        # Take softmax of scores to get a distribution for each head and apply dropout
         attn = self.softmax(scores)
         drop_attn = self.dropout(attn)
-        # Weight the embedding for each head
+        # Weight the embedding for each head with element-wise multiplication
         scores = scores * values
-        #scores = torch.matmul(scores, values.transpose(1, 2))
         logging.info("scores after weighting %s", scores.size())
-        logging.info(scores)
 
         # TODO: Mask stuff
         if mask is not None:
@@ -91,13 +88,13 @@ class MMR():
     Class for computing Maximal Marginal Relevance.
     Code from https://github.com/Alex-Fabbri/Multi-News/blob/master/code/Hi_MAP/onmt/encoders/decoder.py
     """
-    def _init_mmr(self,dim):
+    def _init_mmr(self, hidden_dim):
         # for sentence and summary distance.. This is defined as sim 1
-        self.mmr_W = nn.Linear(dim, dim, bias=False).cuda() # 512*512
+        self.mmr_W = nn.Linear(hidden_dim, hidden_dim, bias=False)
 
-    def _run_mmr(self,sent_encoder,sent_decoder,src_sents, input_step):
+    def _run_mmr(self, doc_emb, query_emb, src_sents, input_step):
         '''
-        # sent_encoder: size (sent_len=9,batch=2,dim=512)
+        # : size (sent_len=9,batch=2,dim=512)
         # sent_decoder: size (sent_len=1,batch=2,dim=512)
         # src_sents: size (batch=2,sent_len=9)
         function to calculate mmr
@@ -111,22 +108,13 @@ class MMR():
 
         scores =[]
         # define sent matrix and current vector distance as the Euclidean distance
-        for sent in sent_encoder: # iterate over each batch sample
+        for d in doc_emb: # iterate over each batch sample
             # distance: https://pytorch.org/docs/stable/_modules/torch/nn/modules/distance.html
-
-            # import pdb;
-            # pdb.set_trace()
-
-            # sim1=torch.sum(pdist(sent_encoder.permute(1,0,2),sent.unsqueeze(1)),1).unsqueeze(1)  # -> this is sim2 on my equation, note this is distance!
-
             sim1 = 1 - torch.mean(pdist(sent_encoder.permute(1, 0, 2), sent.unsqueeze(1)), 1).unsqueeze(1) # this is a similarity function
             # sim1 shape: (batch_size,1)
-
             sim2=torch.bmm(self.mmr_W(sent_decoder),sent.unsqueeze(2)).squeeze(2) # (2,1) -> this is sim1 on my equation
-
             # scores.append(sim1-sim2)
             scores.append(sim2 - sim1)
-
 
         sent_ranking_att = torch.t(torch.cat(scores,1)) #(sent_len=9,batch_size)
         sent_ranking_att = torch.softmax(sent_ranking_att, dim=0).permute(1,0)  #(sent_len=9,batch_size)
@@ -141,7 +129,6 @@ class MMR():
 
                 for x in range(position):
                     tmp.append(sent_ranking_att[batch_id][id])
-
 
             mmr = torch.stack(tmp) # make to 1-d
 

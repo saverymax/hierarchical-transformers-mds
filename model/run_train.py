@@ -4,9 +4,10 @@ import logging
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
-from data import RandomDataset
-from model import HierarchicalMDS
+from .data import RandomDataset
+from .model import HierarchicalMDS
 
 def get_args():
     """
@@ -18,6 +19,7 @@ def get_args():
     parser.add_argument("--checkpoint_dir", dest="checkpoint_dir", default=None, help="Location to save model")
     parser.add_argument("--prediction_dir", dest="prediction_dir", default=None, help="Location to save predictions")
     parser.add_argument("--data_path", dest="data_path", default=None, help="Location of data")
+    parser.add_argument("--tensorboard", dest="tensorboard", action="store_true", help="Log with tensorboard")
 
     # Training
     parser.add_argument("--train_tok", dest="train_tok", action="store_true", help="Train sentencepiece tokenizer on training data")
@@ -63,6 +65,7 @@ def main():
     into any training script
     """
 
+    args = get_args().parse_args()
     torch.manual_seed(args.seed)
     logging.basicConfig(filename="logs/hier_mds.log", filemode="w", level=logging.DEBUG)
 
@@ -76,6 +79,11 @@ def main():
                              batch_size=args.batch_size, shuffle=True)
 
     model = HierarchicalMDS(args)
+    if args.tensorboard:
+        tb_writer = SummaryWriter()
+        tb_writer.add_graph(model)
+        tb_writer.close()
+
     if torch.cuda.is_available():
         torch.cuda.set_device(args.gpu)
         device = torch.device("cuda:{}".format(args.gpu))
@@ -141,6 +149,4 @@ def main():
 
 
 if __name__ == "__main__":
-    global args
-    args = get_args().parse_args()
     main()

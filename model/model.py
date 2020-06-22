@@ -57,7 +57,6 @@ class HierarchicalMDS(nn.Module):
         self.mask = args.mask
         self.k = args.top_k
 
-
         # Shared embedding between encoder, decoder, and logits
         # Three-way weight tying: https://arxiv.org/abs/1706.03762
         if args.init_bert_weights:
@@ -162,7 +161,6 @@ class HierarchicalMDS(nn.Module):
         # Take transpose of input sequences for pytorch transformers, putting seq length first
         query_emb = self.shared_embedding(query_input).transpose(0, 1)
         tgt_emb = self.shared_embedding(target_input).transpose(0, 1)
-        #doc_emb = doc_emb.view(self.max_seq_len, self.batch_size * self.max_docs, self.enc_hidden_dim)
         doc_emb = doc_emb.view(self.max_seq_len, self.batch_size * self.max_docs, self.enc_hidden_dim)
         #tgt_emb = tgt_emb.view(self.max_seq_len, self.batch_size, self.enc_hidden_dim)
         logging.info("seq len: {0}, batch: {1}, docs: {2}, h: {3}".format(self.max_seq_len, self.batch_size, self.max_docs, self.enc_hidden_dim))
@@ -184,6 +182,7 @@ class HierarchicalMDS(nn.Module):
         # ...In the embedding layers, we multiply those weights by sqrt(model)"
         doc_emb = doc_emb * math.sqrt(self.enc_hidden_dim)
         tgt_emb = tgt_emb * math.sqrt(self.dec_hidden_dim)
+        query_emb = query_emb * math.sqrt(self.dec_hidden_dim)
 
         logging.debug("dob emb size: %s", doc_emb.size())
         # Using query and document embeddings, comput Maximal Marginal Relevance
@@ -216,7 +215,7 @@ class HierarchicalMDS(nn.Module):
                 # get local_doc_emb to work for subsequent layers
                 logging.debug("local doc emb size after reshaping %s:", local_doc_emb.size())
                 # Input as tuple to be able to get back tuple from pytorch automatic forward pass in encoder layer
-                local_doc_emb, global_doc_emb = layer((local_doc_emb))
+                local_doc_emb, global_doc_emb = layer([local_doc_emb])
                 logging.debug("local doc emb size after global enc %s:", local_doc_emb.size())
                 logging.debug("global doc emb size after global_enc %s:", global_doc_emb.size())
                 local_doc_emb = local_doc_emb.view(self.max_seq_len, self.max_docs * self.batch_size, self.enc_hidden_dim)
@@ -284,7 +283,7 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
         dropout=0.1, activation="relu"):
 
         super(TransformerGlobalEncoderLayer, self).__init__(
-            d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"
+            d_model, nhead, dim_feedforward=d_model, dropout=0.1, activation="relu"
             )
         self.d_model = d_model
         self.max_seq_len = max_seq_len
@@ -296,8 +295,6 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
             self.multi_head_pooling = MultiHeadPooling(
                 max_seq_len, max_docs, batch_size, d_model, nhead, dropout=dropout
                 )
-        else:
-            self.max_pooling = nn.MaxPool1d(d_model)
 
     def forward(self, input, mmr=None, src_mask=None, src_key_padding_mask=None):
         # type: (Tensor, Optional[Tensor], Optional[Tensor]) -> Tensor
@@ -312,13 +309,15 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
             see the docs in Transformer class.
         """
         logging.info("Using global transformer")
-        #input = input[0]
+        input = input[0]
         logging.info("input_size %s", input.size())
         if self.head_pooling:
             x_pooled = self.multi_head_pooling(input, input)
 
         else:
-            x_pooled = self.max_pooling(input).view(self.max_docs, self.batch_size, self.d_model)
+            x_pooled = input.sum(0).div(self.max_seq_len)
+            logging.info(x_pooled.size())
+            x_pooled = x_pooled.transpose(0, 1).contiguous().view(self.max_docs, self.batch_size, self.d_model)
         logging.info("Pooling size %s", x_pooled.size())
 
         # Once the token representations have been pooled, we can compute attention between documents
@@ -331,12 +330,14 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
             mmr_weights = self.mmr(doc_attn, query_emb)
             doc_emb = mmr_weights * mmr_weights
 
-        # TODO: Compute this correctly in light of multihead pooling
-        input = input.view(self.max_seq_len * self.batch_size * self.max_docs, self.d_model)
-        doc_attn = doc_attn.view(self.max_docs * self.batch_size, self.d_model)
-        repeated_attn = doc_attn.repeat(self.max_seq_len, 1)
+        # Shape doc representations and input to be in order of documents, not examples
+        input = input.transpose(0, 1).contiguous().view(self.max_seq_len * self.batch_size * self.max_docs, self.d_model)
+        # Repeat each document represenation for the max seq len
+        repeated_attn = doc_attn.transpose(0,1).repeat(1, 1, self.max_seq_len).view(-1, self.d_model)
         logging.info("repeated doc attn size %s", repeated_attn.size())
         word_emb = input + self.dropout1(repeated_attn)
+        word_emb = word_emb.view(self.batch_size * self.max_docs, self.max_seq_len, self.d_model).transpose(0, 1)
+        # Apply the rest of the transformer layer as in Pytorch encoder layer
         word_emb_1 = self.norm1(word_emb)
         logging.info("norm1 src %s", word_emb.size())
         word_emb_2 = self.linear2(self.dropout(self.activation(self.linear1(word_emb))))
