@@ -9,7 +9,7 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer, TransformerDec
 from transformers import AlbertConfig, AlbertModel
 from transformers import AlbertModel
 
-from custom_layers import MultiHeadPooling, MMR
+from .custom_layers import MultiHeadPooling, MMR
 
 class HierarchicalMDS(nn.Module):
     """
@@ -156,12 +156,15 @@ class HierarchicalMDS(nn.Module):
         # Shape for pass through document level encoders
         # In general, pytorch convention is to have inputs of (seq length, batch size, n features)
         # Apply shared embedding layer to inputs and targets
-        doc_emb = self.shared_embedding(doc_input)
+        doc_emb = self.shared_embedding(doc_input).transpose(0, 1).contiguous()
+        logging.debug("dob emb size for input: %s", doc_emb.size())
         logging.warning("Implement use of query emb!")
-        query_emb = self.shared_embedding(doc_input)
-        tgt_emb = self.shared_embedding(target_input)
+        # Take transpose of input sequences for pytorch transformers, putting seq length first
+        query_emb = self.shared_embedding(query_input).transpose(0, 1)
+        tgt_emb = self.shared_embedding(target_input).transpose(0, 1)
+        #doc_emb = doc_emb.view(self.max_seq_len, self.batch_size * self.max_docs, self.enc_hidden_dim)
         doc_emb = doc_emb.view(self.max_seq_len, self.batch_size * self.max_docs, self.enc_hidden_dim)
-        tgt_emb = tgt_emb.view(self.max_seq_len, self.batch_size, self.enc_hidden_dim)
+        #tgt_emb = tgt_emb.view(self.max_seq_len, self.batch_size, self.enc_hidden_dim)
         logging.info("seq len: {0}, batch: {1}, docs: {2}, h: {3}".format(self.max_seq_len, self.batch_size, self.max_docs, self.enc_hidden_dim))
         logging.info(doc_emb.size())
         logging.info(tgt_emb.size())
@@ -210,9 +213,13 @@ class HierarchicalMDS(nn.Module):
                 # (input length * max docs, batch siz, hidden dim)
                 #local_doc_emb = local_doc_emb.view(self.max_seq_len * self.max_docs, self.batch_size, self.enc_hidden_dim)
                 # TODO:
-                # pool input max_seq_len * max_docs to just max_docs
+                # get local_doc_emb to work for subsequent layers
                 logging.debug("local doc emb size after reshaping %s:", local_doc_emb.size())
-                local_doc_emb, global_doc_emb = layer(local_doc_emb)
+                # Input as tuple to be able to get back tuple from pytorch automatic forward pass in encoder layer
+                local_doc_emb, global_doc_emb = layer((local_doc_emb))
+                logging.debug("local doc emb size after global enc %s:", local_doc_emb.size())
+                logging.debug("global doc emb size after global_enc %s:", global_doc_emb.size())
+                local_doc_emb = local_doc_emb.view(self.max_seq_len, self.max_docs * self.batch_size, self.enc_hidden_dim)
         logging.debug("global doc emb size after encoder %s:", global_doc_emb.size())
         logging.debug("local doc emb size after encoder %s:", local_doc_emb.size())
         # TODO:
@@ -262,8 +269,10 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
 
 
     Example:
+        >>> from torch import nn
+        >>> from model import TransformerGlobalEncoderLayer
         >>> src = torch.rand(10, 32, 512)
-        >>> encoder_layer = nn.TransformerGlobalEncoderLayer(d_model=512, nhead=8)
+        >>> encoder_layer = TransformerGlobalEncoderLayer(d_model=512, nhead=8)
         >>> transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
         >>> out = transformer_encoder(src)
     """
@@ -277,6 +286,7 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
         super(TransformerGlobalEncoderLayer, self).__init__(
             d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"
             )
+        self.d_model = d_model
         self.max_seq_len = max_seq_len
         self.max_docs = max_docs
         self.batch_size = batch_size
@@ -302,6 +312,7 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
             see the docs in Transformer class.
         """
         logging.info("Using global transformer")
+        #input = input[0]
         logging.info("input_size %s", input.size())
         if self.head_pooling:
             x_pooled = self.multi_head_pooling(input, input)
@@ -311,18 +322,21 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
         logging.info("Pooling size %s", x_pooled.size())
 
         # Once the token representations have been pooled, we can compute attention between documents
-        doc_emb = self.self_attn(x_pooled, x_pooled, x_pooled, attn_mask=src_mask,
+        # using the parent encoder layer method
+        doc_attn = self.self_attn(x_pooled, x_pooled, x_pooled, attn_mask=src_mask,
                               key_padding_mask=src_key_padding_mask)[0]
-        logging.info("self attn %s", doc_emb.size())
+        logging.info("doc attn size %s", doc_attn.size())
         if mmr:
             logging.info("Placeholder for mmr computation")
-            mmr_weights = self.mmr(x_att, query_emb)
+            mmr_weights = self.mmr(doc_attn, query_emb)
             doc_emb = mmr_weights * mmr_weights
 
         # TODO: Compute this correctly in light of multihead pooling
-        logging.info("doc attn size %s", doc_emb.size())
-        doc_emb = doc_emb.view()
-        word_emb = input + self.dropout1(doc_emb)
+        input = input.view(self.max_seq_len * self.batch_size * self.max_docs, self.d_model)
+        doc_attn = doc_attn.view(self.max_docs * self.batch_size, self.d_model)
+        repeated_attn = doc_attn.repeat(self.max_seq_len, 1)
+        logging.info("repeated doc attn size %s", repeated_attn.size())
+        word_emb = input + self.dropout1(repeated_attn)
         word_emb_1 = self.norm1(word_emb)
         logging.info("norm1 src %s", word_emb.size())
         word_emb_2 = self.linear2(self.dropout(self.activation(self.linear1(word_emb))))
@@ -331,7 +345,7 @@ class TransformerGlobalEncoderLayer(TransformerEncoderLayer):
         word_emb = self.norm2(word_emb)
         logging.info("src norm attn %s", word_emb.size())
         #assert src.size() == torch.Size([self.max_docs, self.batch_size, self.enc])
-        return word_emb, doc_emb
+        return word_emb, doc_attn
 
 class PositionalEncoding(nn.Module):
     """

@@ -31,34 +31,29 @@ class MultiHeadPooling(nn.Module):
         Forward pass for Multi Head Pooling used in the global encoder layer
         Expects inputs of shape (max_seq_len, batch_size * max_docs, hidden_dim)
         """
-
-        def shape(x, dim=self.dim_per_head):
-            """  projection """
-            return x.view(self.batch_size, -1, self.n_heads, dim) \
-                .transpose(1, 2)
-
-        def unshape(x, dim=self.dim_per_head):
-            """  compute context """
-            return x.transpose(1, 2).contiguous() \
-                .view(self.batch_size, -1, self.n_heads * dim)
-
-        # Compute attention between each head
+        logging.info("Computing multi-head pooling")
+        # For each token representation in the input:
+        # Run input through two linear layers, where the layer for the attn scores will be of hidden_dim x n_heads
+        # This means that for the atttention scores for one head for one document
+        # the output will be a 1 x max seq length score, one score for each token representation
+        # in the document
         scores = self.linear_keys(key)
         logging.info(scores.size())
+        # and the layer for the values will be of hidden dim x dim of heads
         values = self.linear_values(value)
         logging.info(value.size())
         # 0 index contains max seq length
         # Reshape scores and values so that
-        # shape(scores) == (seq len, head for each doc for each sample, score of dimension 1)
+        # size(scores) == (seq len, score for each head for each doc for each sample
         scores = scores.view(
-            self.max_seq_len, self.max_docs * self.batch_size * self.n_heads, 1
-            ).transpose(0,1)
+            self.max_seq_len, self.max_docs * self.batch_size * self.n_heads
+            ).unsqueeze(-1)
         logging.info("scores %s", scores.size())
         # Reshape values so that
         # shape(values) == (seq len, head for each doc for each sample, vector of size head dim)
         values = values.view(
             self.max_seq_len, self.max_docs * self.batch_size * self.n_heads, self.dim_per_head
-            ).transpose(0,1)
+            )
         logging.info("values %s", values.size())
 
         logging.info("Contiguous: %s", value.is_contiguous())
@@ -68,7 +63,8 @@ class MultiHeadPooling(nn.Module):
         # Weight the embedding for each head
         scores = scores * values
         #scores = torch.matmul(scores, values.transpose(1, 2))
-        logging.info("scores %s", scores.size())
+        logging.info("scores after weighting %s", scores.size())
+        logging.info(scores)
 
         # TODO: Mask stuff
         if mask is not None:
@@ -77,11 +73,12 @@ class MultiHeadPooling(nn.Module):
 
         # 3) Apply attention dropout and compute context vectors.
         # Sum the weights for each head in each doc in an example,
-        # resulting in a context vector of size (max docs, n heads, dim, of heads)
-        context = torch.sum(scores, dim=1)
+        # resulting in a context vector of size (max docs, n heads, dim of heads)
+        context = torch.sum(scores, dim=0)
         logging.info("doc representation %s", context.size())
-        # Then stack the heads so that the final tensor will be of size (max docs, batch size, dimension)
-        context = context.view(self.max_docs, self.batch_size, self.n_heads * self.dim_per_head)
+        # Then stack the heads so that the final tensor will be of size (max docs, batch size, hidden dimension)
+        context = context.view(self.batch_size, self.max_docs, self.n_heads * self.dim_per_head).transpose(0,1)
+        #attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         logging.info("doc representation %s", context.size())
         output = self.final_linear(context)
         logging.info("doc representation %s", output.size())
