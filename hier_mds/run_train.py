@@ -66,7 +66,7 @@ def get_args():
     parser.add_argument("--decoder_attn_mask", dest="decoder_attn_mask", action="store_true", help="Causal mask for decoder")
     parser.add_argument("--mmr", dest="mmr", action="store_true", help="Compute MMR embeddings")
     parser.add_argument("--query_doc_attn", dest="query_doc_attn", action="store_true", help="Inject query into documents with multihead attention")
-    parser.add_argument("--init_bert_weights", dest="init_bert_weights", action="store_true", help="Initiate encoder embeddings with BERT weights")
+    parser.add_argument("--init_bert_weights", dest="init_bert_weights", action="store_true", help="Initiate embeddings with BERT/HugginFace weights")
     parser.add_argument("--use_cls_token", dest="use_cls_token", action="store_true", help="Use CLS token in pretrained model weights as document representation")
     parser.add_argument("--multi_head_pooling", dest="multi_head_pooling", action="store_true", help="Use multi head pooling for global encoder layer")
 
@@ -109,6 +109,7 @@ def main():
 
     # Set up model config for training
     config = HierarchicalTransformerConfig(
+        hf_model=args.hf_model,
         max_docs=args.max_docs,
         max_seq_len=args.max_seq_len,
         batch_size=args.batch_size,
