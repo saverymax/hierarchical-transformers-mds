@@ -10,10 +10,6 @@ from transformers import PretrainedConfig
 
 logger = logging.getLogger(__name__)
 
-# Dictionary if weights made available: {'model name': url}
-BART_PRETRAINED_CONFIG_ARCHIVE_MAP = {}
-
-
 class HierarchicalTransformerConfig(PretrainedConfig):
     """
     Configuration for Hierarchical Transformer

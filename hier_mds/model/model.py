@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer, TransformerDecoder, TransformerDecoderLayer, MultiheadAttention
 
-from transformers import PreTrainedModel, AlbertConfig, AlbertModel
+from transformers import AutoModelWithLMHead, PreTrainedModel, AlbertConfig, AlbertModel
 
 from .custom_layers import MultiHeadPooling, MMR
 
@@ -38,17 +38,22 @@ class HierarchicalTransformer(PreTrainedModel):
         # Shared embedding between encoder, decoder, and logits
         # Three-way weight tying: https://arxiv.org/abs/1706.03762
         if self.config.init_bert_weights:
-            logging.info("Initializing embeddings with BERT")
+            logging.info("Initializing embeddings with pretrained HF transformer")
             self.shared_embedding = self.get_bert_weights()
+            logging.info("Embedding size: %s", self.shared_embedding.weight.size())
+            self.emb_dim = self.shared_embedding.weight.size()[1]
+            # Map to reduce dimension of giant transformer
+            self.linear_reduction = nn.Linear(self.emb_dim, self.config.enc_hidden_dim)
         else:
             logging.info("Initializing random embeddings")
             self.shared_embedding = nn.Embedding(self.config.vocab_size, self.config.enc_hidden_dim)
             self.init_weights(self.shared_embedding)
-
         # Initiate last layer for generating logits
-        self.final_linear_layer = torch.nn.Linear(self.config.dec_hidden_dim, self.config.vocab_size)
-        # Share shared decoder/encoder weights with last layer
-        self.final_linear_layer.weight = self.shared_embedding.weight
+        self.final_linear_layer = nn.Linear(self.config.dec_hidden_dim, self.config.vocab_size)
+        if not self.config.init_bert_weights:
+            # Share shared decoder/encoder weights with last layer
+            # Don't tie weights with embeddings if using HF model because I'll be going up in dimension if I map back
+            self.final_linear_layer.weight = self.shared_embedding.weight
 
     def set_device(self, device):
         """Set GPU or CPU for instance"""
@@ -105,7 +110,6 @@ class HierarchicalTransformer(PreTrainedModel):
         Get BERT (or BERT variant weights) for initialization
         Requires use of HuggingFace
         """
-        logging.warning("Using Albert. Pad inputs on the right: https://huggingface.co/transformers/model_doc/albert.html")
         model = AutoModelWithLMHead.from_pretrained(self.config.hf_model)
         embeddings =  model.get_input_embeddings()
         return embeddings
@@ -163,6 +167,10 @@ class HierarchicalTransformer(PreTrainedModel):
             logging.debug("query emb size: %s", query_emb.size())
         else:
             query_emb = None
+        # If using large transformer, map those to a smaller dimension
+        if self.config.init_bert_weights:
+            token_emb = self.linear_reduction(token_emb)
+            tgt_emb = self.linear_reduction(tgt_emb)
         # Reshape and flatten batch size x max docs for local transformers, where each document is independent
         # For example, the first element of the 0th dimension will contain the first token represenation from each of the
         # documents in the same example, followed by the first token from the documents in the next example
@@ -177,21 +185,20 @@ class HierarchicalTransformer(PreTrainedModel):
             )
         logging.debug("tok emb size for input after initial reshape: %s", token_emb.size())
         logging.debug("token mask emb size for input after initial reshape: %s", src_padding_mask.size())
-
         # Attention is all you need:
         # In our model, we share the same weight matrix between the two embedding
         # layers and the pre-softmax linear transformation...
         # ...In the embedding layers, we multiply those weights by sqrt(model)"
         token_emb = token_emb * math.sqrt(self.config.enc_hidden_dim)
         tgt_emb = tgt_emb * math.sqrt(self.config.dec_hidden_dim)
-        logging.info("initial tok emb %s", token_emb)
         logging.info("src mask %s", src_padding_mask)
         # Add positional embeddings
         # Will return same shape as input
         token_emb = self.pos_encoder(token_emb)
         tgt_emb = self.pos_encoder(tgt_emb)
-
+        # Handle the query if provide
         if query_emb is not None:
+            query_emb = self.linear_reduction(query_emb)
             query_emb = query_emb * math.sqrt(self.config.dec_hidden_dim)
             query_emb = self.pos_encoder(query_emb)
 
@@ -226,7 +233,7 @@ class HierarchicalTransformer(PreTrainedModel):
                                                                 src_key_padding_mask=~src_padding_mask)
                     logging.debug("local doc emb size after global enc %s:", local_doc_emb.size())
                     logging.debug("global doc emb size after global_enc %s:", global_doc_emb.size())
-                    if isinstance(query_padding_mask, torch.Tensor):
+                    if isinstance(query_emb, torch.Tensor):
                         logging.debug("query emb size after global_enc %s:", query_emb.size())
                     local_doc_emb = local_doc_emb.view(
                         self.config.max_seq_len,
@@ -254,18 +261,15 @@ class HierarchicalTransformer(PreTrainedModel):
         else:
             tgt_attn_mask = None
 
-        logging.warning("Use global or local representations for decoder?")
-        if doc_padding_mask is not None:
-            doc_padding_mask = ~doc_padding_mask
-
         # Don't need to negate attn mask as it is correctly generated as is
         output = self.decoder(
             tgt_emb, global_doc_emb,
             tgt_mask=tgt_attn_mask,
             tgt_key_padding_mask=~tgt_padding_mask,
-            memory_key_padding_mask=doc_padding_mask,
+            memory_key_padding_mask=~doc_padding_mask,
             memory_mask=None)
 
+        logging.debug("output after decoder: %s", output.size())
         #logging.debug("output emb size after decoding: %s", output.size())
         output = self.final_linear_layer(output)
         logging.debug("output after final linear layer: %s", output.size())
@@ -328,6 +332,7 @@ class TransformerGlobalEncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
+        self.pooling_norm = nn.LayerNorm(d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
@@ -376,13 +381,15 @@ class TransformerGlobalEncoderLayer(nn.Module):
         logging.info("query size %s", query_emb.size())
         logging.info("src padding_mask size %s", src_key_padding_mask.size())
         if self.head_pooling:
-            x_pooled = self.head_pooling(input, input, src_key_padding_mask)
+            x_pooled = self.head_pooling(input, input,
+                src_key_padding_mask=src_key_padding_mask, doc_key_padding_mask=doc_key_padding_mask)
         else:
             x_pooled = input.sum(0).div(self.max_seq_len)
             logging.info(x_pooled.size())
             # Reshape to match output shape of multihead pooling layer
             x_pooled = x_pooled.view(self.batch_size, self.max_docs, self.d_model).transpose(0, 1).contiguous()
-        logging.warning("Add normalization after pooling")
+        # Norm after pooling, particulary for head_pooling
+        x_pooled = self.pooling_norm(x_pooled)
         logging.info("Pooling size %s", x_pooled.size())
         logging.info("x pooled %s", x_pooled)
         # Once the token representations have been pooled, we can compute attention between documents
@@ -395,7 +402,7 @@ class TransformerGlobalEncoderLayer(nn.Module):
         # Either compute mmr attention b/w docs and query, or
         # compute multi-headed self attention with pytorch module.
         # Additionally, it is possible to directly use the document
-        # vectors without query information
+        # vectors without query informatiodn
         if self.mmr:
             doc_attn = self.mmr_attention(doc_attn, query_emb, doc_key_padding_mask, query_padding_mask)
             logging.info("doc mmr weighted size %s", doc_attn.size())
