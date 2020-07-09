@@ -11,8 +11,10 @@ ffw_dim=1024
 att_heads=4
 # Valid tasks: 'mediqa', 'bioasq', 'ebm', 'medlineplus', 'cnn_dailymail', 'eli5'
 python -u -m hier_mds.run_train \
-  --training_tasks="ebm" \
-  --validation_tasks="ebm" \
+  --train \
+  --training_tasks="cnn_dailymail eli5" \
+  --validate \
+  --validation_tasks="cnn_dailymail eli5" \
   --hf_model="facebook/bart-large" \
   --data_dir=/data/LHC_kitchensink/tensorflow_datasets_max/downloads/manual \
   --cache_dir=/lscratch/$SLURM_JOB_ID \
@@ -35,11 +37,7 @@ python -u -m hier_mds.run_train \
   --n_att_heads=$att_heads \
   --decoder_attn_mask \
   --multi_head_pooling \
-  --mmr \
-  --doc_mixing \
-  --padding_mask \
-  --train \
-  --validate
-
-#--query_doc_attn \
-#--init_bert_weights
+  --query_doc_attn \
+   --mmr \
+  --init_bert_weights
+#  --doc_mixing \
