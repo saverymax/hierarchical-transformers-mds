@@ -29,8 +29,7 @@ class HierarchicalTransformer(PreTrainedModel):
         logging.info("Hierarchical config: %s", self.config)
         self.decoder = self.get_decoder()
         self.pos_encoder = PositionalEncoding(self.config.enc_hidden_dim, self.config.dropout, max_len=self.config.max_seq_len)
-        local_encoder = self.get_local_encoder()
-        self.encoder = nn.ModuleList([local_encoder, self.get_global_encoder()])
+        self.encoder = self.get_encoder()
         self.encoder_layers = ["local", "global"]
         #logging.info("Encoder objects: {}".format(self.encoder))
         # Softmax for selecting documents
@@ -55,6 +54,14 @@ class HierarchicalTransformer(PreTrainedModel):
         """Set GPU or CPU for instance"""
         self.compute_device = device
         #self.pos_encoder = PositionalEncoding(self.enc_hidden_dim, self.dropout, max_len=self.max_seq_len, device=device)
+
+    def get_encoder(self):
+        """
+        Return local and global encoder
+        Why is this method here: Required by HuggingFace to use .generate()
+        """
+        local_encoder = self.get_local_encoder()
+        return nn.ModuleList([local_encoder, self.get_global_encoder()])
 
     def get_local_encoder(self):
         """
@@ -130,28 +137,32 @@ class HierarchicalTransformer(PreTrainedModel):
         # Masking prep:
         if not isinstance(src_padding_mask, torch.Tensor) or not isinstance(tgt_padding_mask, torch.Tensor):
             raise IOError("Src or tgt mask is not of type torch.Tensor. Please provide masks from hf tokenizer with return_tensors='pt'")
+        else:
             # Masks should be of shape (batch_size, seq_len)
             # Simple way to mask out documents is to sum booleans along seq len dimension.
             # If greater than zero, there must be at least one token in the doc
             # Will be of shape (batch_size, max_docs)
-        else:
             doc_padding_mask = src_padding_mask.sum(-1) > 0
             logging.info("doc_mask size %s" , doc_padding_mask.size())
             logging.info("doc_mask %s" , doc_padding_mask)
             logging.info("TOken mask! %s", src_padding_mask.size())
+            logging.info("TOken mask! %s", src_padding_mask)
+            logging.info("target mask! %s", tgt_padding_mask.size())
             if isinstance(query_padding_mask, torch.Tensor):
                 logging.info("query mask! %s", query_padding_mask.size())
-            logging.info("target mask! %s", tgt_padding_mask.size())
 
         # Apply shared embedding layer to inputs and targets
         token_emb = self.shared_embedding(src_input)
-        logging.debug("dob emb size for input: %s", token_emb.size())
-        # Take transpose of target sequences for pytorch transformers, putting seq length first
+        logging.debug("token emb size for input: %s", token_emb.size())
+        # Take transpose of target sequences for pytorch transformers, putting seq length first: (seq len, bach size, hidden_dim)
         tgt_emb = self.shared_embedding(target_input).transpose(0, 1)
         logging.debug("tgt emb size: %s", tgt_emb.size())
-        if isinstance(query_padding_mask, torch.Tensor):
+        if isinstance(query_input, torch.Tensor):
+            # Same size as tgt
             query_emb = self.shared_embedding(query_input).transpose(0, 1)
             logging.debug("query emb size: %s", query_emb.size())
+        else:
+            query_emb = None
         # Reshape and flatten batch size x max docs for local transformers, where each document is independent
         # For example, the first element of the 0th dimension will contain the first token represenation from each of the
         # documents in the same example, followed by the first token from the documents in the next example
@@ -164,7 +175,7 @@ class HierarchicalTransformer(PreTrainedModel):
             self.config.batch_size * self.config.max_docs,
             self.config.max_seq_len
             )
-        logging.debug("dob emb size for input after initial reshape: %s", token_emb.size())
+        logging.debug("tok emb size for input after initial reshape: %s", token_emb.size())
         logging.debug("token mask emb size for input after initial reshape: %s", src_padding_mask.size())
 
         # Attention is all you need:
@@ -173,18 +184,16 @@ class HierarchicalTransformer(PreTrainedModel):
         # ...In the embedding layers, we multiply those weights by sqrt(model)"
         token_emb = token_emb * math.sqrt(self.config.enc_hidden_dim)
         tgt_emb = tgt_emb * math.sqrt(self.config.dec_hidden_dim)
-        logging.info("initial doc emb %s", token_emb)
+        logging.info("initial tok emb %s", token_emb)
         logging.info("src mask %s", src_padding_mask)
         # Add positional embeddings
         # Will return same shape as input
         token_emb = self.pos_encoder(token_emb)
         tgt_emb = self.pos_encoder(tgt_emb)
 
-        if isinstance(query_padding_mask, torch.Tensor):
+        if query_emb is not None:
             query_emb = query_emb * math.sqrt(self.config.dec_hidden_dim)
             query_emb = self.pos_encoder(query_emb)
-        else:
-            query_emb = None
 
         # Iterate through the local and global encoders
         # Global doc encoding will not be generated until first pass
@@ -259,7 +268,7 @@ class HierarchicalTransformer(PreTrainedModel):
 
         #logging.debug("output emb size after decoding: %s", output.size())
         output = self.final_linear_layer(output)
-        logging.debug("output after linear layer: %s", output.size())
+        logging.debug("output after final linear layer: %s", output.size())
         # Final reshape for cross entropy (Soft max and NLLoss), where the number of classes
         # is dim == 1
         output = output.permute(1, 2, 0)
@@ -340,8 +349,6 @@ class TransformerGlobalEncoderLayer(nn.Module):
             self.head_pooling = MultiHeadPooling(
                 max_seq_len, max_docs, batch_size, d_model, nhead, dropout=dropout
                 )
-        logging.warning("Register buffer?")
-        #self.register_buffer('', stuff)
 
     def forward(self, input, src_mask=None, src_key_padding_mask=None, query_padding_mask=None, doc_key_padding_mask=None):
         # type: (Tensor, Optional[Tensor], Optional[Tensor]) -> Tensor
@@ -349,7 +356,8 @@ class TransformerGlobalEncoderLayer(nn.Module):
 
         Args:
             src: the sequence to the encoder layer (required).
-            src_mask: the mask for the src sequence (optional).
+            src_mask: the mask for the src sequence (optional). This will be usef pretraining LM objectives, but not
+            for any multi-document experiments/training
             src_key_padding_mask: the mask for the src keys per batch (optional).
 
         Shape:
@@ -363,18 +371,18 @@ class TransformerGlobalEncoderLayer(nn.Module):
 
         query_emb = input[2]
         input = input[0]
-        logging.info("initial input %s", input)
+        #logging.info("initial input %s", input)
         logging.info("input_size %s", input.size())
         logging.info("query size %s", query_emb.size())
         logging.info("src padding_mask size %s", src_key_padding_mask.size())
         if self.head_pooling:
             x_pooled = self.head_pooling(input, input, src_key_padding_mask)
-            #probably should normalize
         else:
             x_pooled = input.sum(0).div(self.max_seq_len)
             logging.info(x_pooled.size())
             # Reshape to match output shape of multihead pooling layer
             x_pooled = x_pooled.view(self.batch_size, self.max_docs, self.d_model).transpose(0, 1).contiguous()
+        logging.warning("Add normalization after pooling")
         logging.info("Pooling size %s", x_pooled.size())
         logging.info("x pooled %s", x_pooled)
         # Once the token representations have been pooled, we can compute attention between documents
@@ -430,6 +438,7 @@ class PositionalEncoding(nn.Module):
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
+        # register_buffer is used to give an attribute to a module that is not a parameter
         self.register_buffer('pe', pe)
 
     def forward(self, x):

@@ -23,7 +23,7 @@ class MultiHeadPooling(nn.Module):
         self.n_heads = n_heads
         self.linear_keys = nn.Linear(self.hidden_dim, self.n_heads)
         self.linear_values = nn.Linear(self.hidden_dim, self.n_heads * self.dim_per_head)
-        self.softmax = nn.Softmax(dim=-1)
+        self.softmax = nn.Softmax(dim=0)
         self.dropout = nn.Dropout(dropout)
         self.final_linear = nn.Linear(self.hidden_dim, self.hidden_dim)
 
@@ -48,19 +48,31 @@ class MultiHeadPooling(nn.Module):
         logging.info("values %s", value.size())
 
         # Mask the padded indices that shouldn't get a weight
-        logging.warning("Fully masked documents will result in nan")
+        logging.info("scores before mask %s", scores)
         if mask is not None:
-            # Mask comes in with batch_size x max_docs as 0th dim
+            # Mask comes in with shape (batch_size x max_docs, max seq len)
+            logging.info("mask for attn scores %s", mask.size())
             mask = mask.transpose(0, 1).unsqueeze(-1)
+            logging.info("mask for attn scores reshape %s", mask.size())
             # Masked fill can Broadcast to last dim
             scores.masked_fill_(mask, float('-inf'))
 
+        logging.info("scores after masking %s", scores.size())
+        logging.info("scores after masking %s", scores)
+        # Take softmax of scores over tokens for a doc, to get a distribution for each head and apply dropout.
+        # The masked values will be zeroed out
+        attn = self.softmax(scores)
+        logging.info("scores after softmax %s", attn.size())
+        logging.info("scores after softmax %s", attn)
         # Reshape scores and values so that
         # shape(scores) == (seq len, score for each head for each doc for each sample)
-        scores = scores.view(
+        attn = attn.view(
             self.max_seq_len, self.max_docs * self.batch_size * self.n_heads
             ).unsqueeze(-1)
-        logging.info("scores %s", scores.size())
+        logging.info("scores after reshape %s", attn.size())
+        logging.info("scores after reshape %s", attn)
+        logging.info("scores %s", attn.size())
+        drop_attn = self.dropout(attn)
         # Reshape values so that
         # shape(values) == (seq len, head for each doc for each sample, vector of size head dim)
         values = values.view(
@@ -68,10 +80,6 @@ class MultiHeadPooling(nn.Module):
             )
         logging.info("values after shaping %s", values.size())
         logging.info(values)
-        # Take softmax of scores to get a distribution for each head and apply dropout.
-        # The masked values will be zeroed out
-        attn = self.softmax(scores)
-        drop_attn = self.dropout(attn)
         # Weight the embedding for each head with element-wise multiplication
         weighted_values = drop_attn * values
         logging.info("tokens after weightin %s", weighted_values.size())
@@ -138,6 +146,15 @@ class MMR(nn.Module):
         logging.info("query after linear %s ", query.size())
         # Apply linear for attention weights to get single scores for each token
         query_attn = self.query_attn(query)
+        # Mask the query attn scores where the query is padded,
+        # so that any document representation multiplied with that token will result in 0
+        if query_padding_mask is not None:
+            # Mask comes in with batch_size x max_docs as 0th dim
+            logging.info("query_mask %s", query_padding_mask.size())
+            logging.info("query_mask %s", query_padding_mask)
+            mask = query_padding_mask.unsqueeze(-1)
+            # Masked fill can Broadcast to last dim
+            query_attn.masked_fill_(mask, float('-inf'))
         # Turn output of linear into distribution
         query_attn = self.query_softmax(query_attn)
         #logging.info(query_attn)
@@ -148,24 +165,19 @@ class MMR(nn.Module):
         # For each token representation in query, multiply with document represenation
         query_doc = torch.bmm(query, doc_values.transpose(1, 2))
         logging.info("query doc linear %s", query_doc.size())
+        logging.info("query doc linear %s", query_doc)
 
-        if query_padding_mask is not None:
-            # Mask comes in with batch_size x max_docs as 0th dim
-            mask = query_padding_mask.unsqueeze(-1)
-            # Masked fill can Broadcast to last dim
-            query_doc.masked_fill_(mask, float('-inf'))
-
-        logging.info(query_doc)
         query_doc_attn = query_attn * query_doc
+        logging.info("weighted query doc linear %s", query_doc_attn.size())
         logging.info(query_doc_attn)
-        logging.info("weighted query doc linear %s", query_doc.size())
-        # Weighted summation of columns, combining a documents score for each token in the query
+        # Weighted summation of columns, combining a documents attention weighted score for each token in the query
         sim1 = query_doc_attn.sum(dim=1)
+        logging.info("first sim: %s", sim1.size())
         logging.info(sim1)
         # shape == (batch_size x number of docs, where each doc has a mmr score)
-        logging.info("first sim: %s", sim1.size())
         # Then compute similarity between documents, using the weights previously computed for docs
         logging.info("doc weights %s", doc_values.size())
+        logging.info("doc weights %s", doc_values)
         sim2 = torch.bmm(doc_values, doc_values.transpose(1, 2))
         logging.info("sim 2 %s", sim2.size())
         logging.info("sim 2 %s", sim2)

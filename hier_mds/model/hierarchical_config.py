@@ -44,8 +44,8 @@ class HierarchicalTransformerConfig(PretrainedConfig):
         k_docs=None,
         init_bert_weights=True,
         hf_model=None,
-        bos_token=None,
         eos_token=None,
+        eos_token_id=None,
         is_encoder_decoder=True,
         **common_kwargs
     ):
@@ -89,6 +89,9 @@ class HierarchicalTransformerConfig(PretrainedConfig):
         # so you don't have to worry about matching them
         self.hf_model = hf_model
         self.init_bert_weights = init_bert_weights
-        self.bos_token = eos_token
+        # Using EOS as BOS for teacher forcing, meaning EOS is wrapped to the beginning of of a seq,
+        # and pad token goes at the end
+        self.bos_token_id = eos_token_id
+        self.eos_token_id = eos_token_id
         self.eos_token = eos_token
         assert self.eos_token is not None, "Please specify eos token used by tokenizer, as this is used for shifting inputs right "
