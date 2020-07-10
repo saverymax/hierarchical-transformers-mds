@@ -107,17 +107,17 @@ class ELI5():
         if split == "val":
             split = "validation"
         self.prompt = "<TASK> {} <QUESTION> ".format(task)
-        self.dataset = nlp.load_dataset(task, split="{}_eli5[:20]".format(split), cache_dir=cache_dir)
+        self.dataset = nlp.load_dataset(task, split="{}_eli5[:30%]".format(split), cache_dir=cache_dir)
         self.tokenizer = tokenizer
         self.doc_mixing = doc_mixing
         self.max_docs = max_docs
         self.eos_token = eos_token
-        logging.info("eos %s", eos_token)
         # Fix weird writing problem with urls. Only one particular one broke it, but IDK
         self.dataset = self.dataset.map(self.fix_urls)
         # Add EOS and grab the first answer in the list of answers as the "summary"
         #self.dataset = self.dataset.map(self.add_eos)
-        # Using title and not selftext as query as there are a good number of "" selftext entries
+        self.dataset = self.dataset.map(self.collect_summaries)
+        # Using title as query and not selftext as query as there are a good number of "" selftext entries
         self.dataset = self.dataset.map(lambda example: {'title': self.prompt + example['title']})
         # Map all answers to 'document key', so my src documents are a list of answers which can be padded/mixed
         self.dataset = self.dataset = self.dataset.map(lambda example: {'document': example['answers']['text']})
@@ -143,7 +143,13 @@ class ELI5():
     def fix_urls(self, example):
         return {'selftext_urls': [], 'answers_urls': []}
 
+    def collect_summaries(self, example):
+        """Map first answer to summary key"""
+        answer = example['answers']['text'][0]
+        return {'summary': answer}
+
     def add_eos(self, example):
+        """Not in use unless I decide to use eos again"""
         answer = example['answers']['text'][0]
         answer = answer + " " + self.eos_token
         return {'summary': answer}
@@ -185,12 +191,12 @@ class CnnDm():
         task = "cnn_dailymail"
         if split == "val":
             split = "validation"
-        self.dataset = nlp.load_dataset(task, '3.0.0', split="{}[:20]".format(split), cache_dir=cache_dir)
+        self.prompt = "<TASK> {} <QUESTION> NONE ".format(task)
+        self.dataset = nlp.load_dataset(task, '3.0.0', split="{}[:30%]".format(split), cache_dir=cache_dir)
         self.tokenizer = tokenizer
         self.doc_mixing = doc_mixing
         self.max_docs = max_docs
         self.eos_token = eos_token
-        print(self.dataset)
         #self.dataset = self.dataset.map(lambda example: {'highlights': example['highlights'] + " " + self.eos_token})
         # As CNN is a single-doc dataset, provide each article to pad or sample docs in a []
         if self.doc_mixing:
@@ -202,12 +208,18 @@ class CnnDm():
             doc_filling = functools.partial(pad_docs, max_docs=self.max_docs, article_key='article')
         #self.dataset['article'][:] = [doc_filling(i) for i in self.dataset['article'][:]]
         self.dataset = self.dataset.map(doc_filling)
+        self.dataset = self.dataset.map(self.add_query)
         self.dataset = self.dataset.map(self.convert_to_features, batched=True)
         print(len(self.dataset['source_ids'][:]))
         # Format dataset to outputs torch.Tensor to train a pytorch model
-        columns_to_return = ['target_ids', 'target_mask', 'source_ids', 'source_mask']
+        columns_to_return = ['query_ids', 'query_mask', 'target_ids', 'target_mask', 'source_ids', 'source_mask']
+        #columns_to_return = ['target_ids', 'target_mask', 'source_ids', 'source_mask']
         self.dataset.set_format(type='torch',
             columns=columns_to_return)
+
+    def add_query(self, example):
+        """Add query with just task"""
+        return {'query': self.prompt}
 
     def get_dataset(self):
         return self.dataset
@@ -218,6 +230,7 @@ class CnnDm():
         HF map provides input of datasets[:batch_size]
         """
         tgt_encodings = self.tokenizer(example_batch['highlights'])
+        query_encodings = self.tokenizer(example_batch['query'])
         src_encodings = [self.tokenizer(articles) for articles in example_batch['article']]
         #src_encodings = self.tokenizer(example_batch['article'])
         input_ids = []
@@ -233,8 +246,8 @@ class CnnDm():
         return {
             "source_ids": input_ids,
             "source_mask": attention_mask,
-            # "source_ids": src_encodings['input_ids'],
-            # "source_mask": src_encodings['attention_mask'],
+            "query_ids": query_encodings['input_ids'],
+            "query_mask": query_encodings['attention_mask'],
             "target_ids": tgt_encodings['input_ids'],
             "target_mask": tgt_encodings['attention_mask']}
 

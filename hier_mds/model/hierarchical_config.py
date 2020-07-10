@@ -37,6 +37,7 @@ class HierarchicalTransformerConfig(PretrainedConfig):
         query_doc_attn=False,
         padding_mask=True,
         decoder_attn_mask=False,
+        dec_mem_input="local",
         k_docs=None,
         init_bert_weights=True,
         hf_model=None,
@@ -79,6 +80,7 @@ class HierarchicalTransformerConfig(PretrainedConfig):
         self.query_doc_attn = query_doc_attn
         self.padding_mask = padding_mask
         self.decoder_attn_mask = decoder_attn_mask
+        self.dec_mem_input = dec_mem_input
         self.k_docs = k_docs
         # Specify which hugging face model to use to load embeddings.
         # The same cli argument for this will also load the tokenizer,

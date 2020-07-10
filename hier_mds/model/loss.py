@@ -18,14 +18,14 @@ class LabelSmoothingLoss(nn.Module):
     """
     def __init__(self, label_smoothing, tgt_vocab_size, ignore_index=1):
         assert 0.0 < label_smoothing <= 1.0
-        self.ignore_index = ignore_index
         super(LabelSmoothingLoss, self).__init__()
+        self.ignore_index = ignore_index
         self.vocab_size = tgt_vocab_size
-        smoothing_value = label_smoothing / (tgt_vocab_size - 2)
+        smoothing_value = label_smoothing / (tgt_vocab_size)
         one_hot = torch.full((tgt_vocab_size,), smoothing_value)
+        # Don't include any values in this index in the loss
         one_hot[self.ignore_index] = 0
         self.register_buffer('one_hot', one_hot.unsqueeze(0))
-
         self.confidence = 1.0 - label_smoothing
 
     def forward(self, output, target):
@@ -34,32 +34,33 @@ class LabelSmoothingLoss(nn.Module):
         target (LongTensor): batch_size x max_seq_len
         """
         # Flatten output and target
+        logging.info("smooooothn loss")
         output = output.transpose(1, 2).contiguous().view(-1, self.vocab_size)
+        logging.info("initial incoming output %s", output.size())
+        logging.info("output %s", output)
+        logging.info("initial arget %s", target.size())
+        logging.info("target %s", target)
         target = target.contiguous().view(-1)
+        logging.info("target rehspad %s", target.size())
+        logging.info("target %s", target)
+        output = nn.functional.log_softmax(output, dim=-1)
+        logging.info("output after soft %s", output)
+        #output.masked_fill_((target == self.ignore_index).unsqueeze(1), 0)
+        #logging.info("incoming output after mask %s", output.size())
+        #logging.info("output %s", output)
         assert output.size() == torch.Size([target.size()[0], self.vocab_size])
         model_prob = self.one_hot.repeat(target.size(0), 1)
+        logging.info("initial model prob %s", model_prob.size())
+        logging.info("initial model prob %s", model_prob)
         model_prob.scatter_(1, target.unsqueeze(1), self.confidence)
+        logging.info("scattered model prob %s", model_prob.size())
+        logging.info("scattered model prob %s", model_prob)
+        # Mask out based on the padding index provided in init
         model_prob.masked_fill_((target == self.ignore_index).unsqueeze(1), 0)
-
-        return nn.functional.kl_div(output, model_prob, reduction='sum')
-
-
-class LabelSmoothedCrossEntropyLoss(nn.Module):
-    """this loss performs label smoothing to compute cross-entropy with soft labels, when smoothing=0.0, this
-    is the same as torch.nn.CrossEntropyLoss"""
-
-    def __init__(self, n_classes, smoothing=0.0, dim=-1):
-        super().__init__()
-        self.confidence = 1.0 - smoothing
-        self.smoothing = smoothing
-        self.n_classes = n_classes
-        self.dim = dim
-
-    def forward(self, pred, target):
-        pred = pred.log_softmax(dim=self.dim)
-        with torch.no_grad():
-            true_dist = torch.zeros_like(pred)
-            true_dist.fill_(self.smoothing / (self.n_classes - 1))
-            true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-
-        return torch.mean(torch.sum(-true_dist * pred, dim=self.dim))
+        logging.info("maskd model prob %s", model_prob.size())
+        logging.info("maskd model prob %s", model_prob)
+        # Returns sum(outputs * (log(outputs)-labels)
+        loss = nn.functional.kl_div(output, model_prob, reduction='sum')
+        logging.info("kl loss %s", loss.size())
+        logging.info("kl loss %s", loss)
+        return loss

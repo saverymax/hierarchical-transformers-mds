@@ -52,7 +52,7 @@ class HierarchicalTransformer(PreTrainedModel):
         self.final_linear_layer = nn.Linear(self.config.dec_hidden_dim, self.config.vocab_size)
         if not self.config.init_bert_weights:
             # Share shared decoder/encoder weights with last layer
-            # Don't tie weights with embeddings if using HF model because I'll be going up in dimension if I map back
+            # Don't tie weights with embeddings if using giant HF model because I'll be going up in dimension if I map back
             self.final_linear_layer.weight = self.shared_embedding.weight
 
     def set_device(self, device):
@@ -245,6 +245,7 @@ class HierarchicalTransformer(PreTrainedModel):
         # Probably not going to use top k unless I come up with a better way to do it.
         # Maybe just use at inference?
         if self.config.k_docs is not None:
+            logging.info("Using top k docs")
             # Use softmax to select the topk documents, and provide the local encoder embeddings
             doc_likelikehoods = self.doc_softmax(global_doc_emb)
             # Select the topk k docs from the attention representations weighted with mmr or other measures
@@ -261,12 +262,21 @@ class HierarchicalTransformer(PreTrainedModel):
         else:
             tgt_attn_mask = None
 
+        if self.config.dec_mem_input == "global":
+            dec_input_emb = global_doc_emb
+            dec_key_mask = ~doc_padding_mask
+        elif self.config.dec_mem_input == "local":
+            dec_input_emb = local_doc_emb
+            # Don't use a mask as there will be fully padded seqs
+            dec_key_mask = None
+        else:
+            raise IOError("Please provide one of 'global' or 'local' as argument to dec_mem_input")
         # Don't need to negate attn mask as it is correctly generated as is
         output = self.decoder(
-            tgt_emb, global_doc_emb,
+            tgt_emb, dec_input_emb,
             tgt_mask=tgt_attn_mask,
             tgt_key_padding_mask=~tgt_padding_mask,
-            memory_key_padding_mask=~doc_padding_mask,
+            memory_key_padding_mask=dec_key_mask,
             memory_mask=None)
 
         logging.debug("output after decoder: %s", output.size())
@@ -333,6 +343,8 @@ class TransformerGlobalEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
         self.pooling_norm = nn.LayerNorm(d_model)
+        self.doc_attn_norm = nn.LayerNorm(d_model)
+        self.query_doc_norm = nn.LayerNorm(d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout1 = nn.Dropout(dropout)
@@ -398,6 +410,7 @@ class TransformerGlobalEncoderLayer(nn.Module):
                               key_padding_mask=doc_key_padding_mask)[0]
         logging.info("doc attn size %s", doc_attn.size())
         logging.info("inter doc attn %s", doc_attn)
+        doc_attn = self.doc_attn_norm(x_pooled)
         # Two ways to inject query knowledge into context embeddings:
         # Either compute mmr attention b/w docs and query, or
         # compute multi-headed self attention with pytorch module.
@@ -410,14 +423,18 @@ class TransformerGlobalEncoderLayer(nn.Module):
             doc_attn = self.self_attn(doc_attn, query_emb, query_emb, attn_mask=src_mask,
                               key_padding_mask=query_padding_mask)[0]
             logging.info("doc query attn size %s", doc_attn.size())
-
+        doc_attn = self.query_doc_norm(doc_attn)
         # Shape last three dimensions of input to match dimension of doc rep: (max_docs, batch_size, hidden dim)
         input = input.contiguous().view(-1, self.batch_size, self.max_docs, self.d_model).transpose(1, 2)
-        logging.info("input for adding context %s", input.size())
+        logging.info("input befor adding context %s", input.size())
+        logging.info("input befor adding context %s", input)
         # Broadcast doc embeddings to dim 0 (seq length) of word emb
         word_emb = input + self.dropout1(doc_attn)
+        logging.info("input after adding context %s", input)
         # Undo reshaping
         word_emb = word_emb.transpose(1, 2).view(self.max_seq_len, self.batch_size * self.max_docs, self.d_model)
+        logging.info("input after reshape %s", input.size())
+        logging.info("input %s", input)
         # Apply the rest of the transformer layer as in the Pytorch encoder layer
         word_emb_1 = self.norm1(word_emb)
         word_emb_2 = self.linear2(self.dropout(self.activation(self.linear1(word_emb))))

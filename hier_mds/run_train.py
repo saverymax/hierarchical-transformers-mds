@@ -1,12 +1,14 @@
 import os
 import sys
+import math
 import argparse
 import logging
 import functools
 import json
 import numpy as np
-
 import GPUtil
+from tqdm import tqdm
+
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
@@ -27,6 +29,7 @@ def get_args():
     parser.add_argument("--checkpoint_dir", dest="checkpoint_dir", default=None, help="Location to save model")
     parser.add_argument("--prediction_dir", dest="prediction_dir", default=None, help="Location to save predictions")
     parser.add_argument("--data_dir", dest="data_dir", default="", help="Base directory containing data")
+    parser.add_argument("--log_dir", dest="log_dir", default="", help="Dir for logging, if using tensorboard")
     parser.add_argument("--cache_dir", dest="cache_dir", default="", help="Directory to check for cached data")
     parser.add_argument("--tensorboard", dest="tensorboard", action="store_true", help="Log with tensorboard")
     parser.add_argument("--hf_model", dest="hf_model", default="", help="Specify hugging face tokenizer and model to use for initializing embeddings")
@@ -44,7 +47,7 @@ def get_args():
     parser.add_argument("--eval_batch_size", dest="eval_batch_size", type=int, default=16, help="Size of batches for validation")
     parser.add_argument("--seed", default=None, type=int)
     parser.add_argument("--gpu", type=int, default=0, help="gpu id to use")
-    parser.add_argument("--learning_rate", dest="learning_rate", type=float, default=2, help="Set learning rate")
+    parser.add_argument("--learning_rate", dest="learning_rate", type=float, default=1e-3, help="Set learning rate")
     parser.add_argument("--label_smoothing", default=None, type=float)
     parser.add_argument("--beta_1", dest="beta_1", type=float, default=.9, help="Beta 1 for optimizer")
     parser.add_argument("--beta_2", dest="beta_2", type=float, default=.998, help="Beta 2 for optimzer")
@@ -69,6 +72,7 @@ def get_args():
     parser.add_argument("--init_bert_weights", dest="init_bert_weights", action="store_true", help="Initiate embeddings with BERT/HugginFace weights")
     parser.add_argument("--use_cls_token", dest="use_cls_token", action="store_true", help="Use CLS token in pretrained model weights as document representation")
     parser.add_argument("--multi_head_pooling", dest="multi_head_pooling", action="store_true", help="Use multi head pooling for global encoder layer")
+    parser.add_argument("--dec_mem_input", dest="dec_mem_input", default="local", help="Use local or global representations for decoder memory input. Should be 'local' or 'global'")
 
     return parser
 
@@ -133,13 +137,15 @@ def main():
         eos_token_id=eos_token_id,
         k_docs=args.topk_docs,
         init_bert_weights=args.init_bert_weights,
+        dec_mem_input=args.dec_mem_input,
     )
     model = HierarchicalTransformer(config)
 
     if args.tensorboard:
-        tb_writer = SummaryWriter()
-        tb_writer.add_graph(model)
-        tb_writer.close()
+        if args.log_dir == "":
+            raise IOError("Please provide a logging directory if using tensorboard")
+        tb_writer = SummaryWriter(args.log_dir)
+        #tb_writer.add_graph(model)
 
     if torch.cuda.is_available():
         torch.cuda.set_device(args.gpu)
@@ -154,6 +160,7 @@ def main():
     if args.train:
         if args.checkpoint_dir is not None:
             os.makedirs(args.checkpoint_dir, exist_ok=True)
+            os.makedirs("{0}_best".format(args.checkpoint_dir), exist_ok=True)
 
         # Map tasks to dataset classes
         data_registry = DatasetRegistry().get_tasks()
@@ -210,20 +217,24 @@ def main():
             betas=[args.beta_1,args.beta_2],
             lr=args.learning_rate)
 
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1.0, gamma=0.95)
+        #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1.0, gamma=0.95)
         if args.label_smoothing is not None:
             logging.info("Using label smoothing loss of %s", args.label_smoothing)
             criterion = LabelSmoothingLoss(label_smoothing=args.label_smoothing, tgt_vocab_size=tokenizer.vocab_size).to(device)
         else:
+            logging.info("Using cross entropy loss with no label smoothing")
             criterion = torch.nn.CrossEntropyLoss()
 
         logging.info("Beginning training for {e} epochs, batch size {b}".format(e=args.epochs, b=args.batch_size))
-        for epoch in range(args.epochs):
+        total_train_steps = 0
+
+        for epoch in tqdm(range(args.epochs)):
             # Model is set to eval for ever validation epoch
             model.train()
             running_loss = 0
-            for i, batch in enumerate(training_data):
-                GPUtil.showUtilization()
+            train_steps = 0
+            for i, batch in enumerate(tqdm(training_data)):
+                #GPUtil.showUtilization()
                 # If not query is provided...
                 if 'query_ids' in batch:
                     query_batch = batch['query_ids'].to(device)
@@ -280,14 +291,28 @@ def main():
                 loss = criterion(output, target_batch)
                 loss.backward()
                 running_loss += loss.item()
-                optimizer.step() # Update weights
+                train_steps += 1
+                total_train_steps += 1
+                logging.info("training loss %s", running_loss / train_steps)
+                if args.tensorboard:
+                    tb_writer.add_scalar('training loss',
+                                running_loss / train_steps,
+                                global_step=total_train_steps)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-                scheduler.step() # Update learning rate if appropriate
+                optimizer.step() # Update weights
+                # Update learning rate
+                for param_group in optimizer.param_groups:
+                    logging.info("param opt group %s", param_group)
+                    logging.info("param opt group %s", param_group['lr'])
+                    lr_update = 1 / math.sqrt(max(total_train_steps, 10**4))
+                    logging.info("New learning rate %s", lr_update)
+                    param_group['lr'] = lr_update
+                #scheduler.step() # Update learning rate if appropriate
                 optimizer.zero_grad() # zero the gradient buffers
-                logging.info("Batch # %s", i)
-                logging.warning("FORCED EXIT!")
+                #print("Batch #", )
+                #logging.warning("FORCED EXIT!")
                 #break
-                sys.exit()
+                #sys.exit()
 
             # random_input = np.random.randint(0, args.batch_size)
             # gen_out = model.generate([source_batch[random_input, :, :]], src_padding_mask=source_mask, query_padding_mask=query_mask)
@@ -297,8 +322,8 @@ def main():
             if args.validate:
                 logging.info("Beginning validation")
                 running_valid_loss = 0
-                best_valid_loss = 0
                 valid_steps = 0
+                total_valid_steps = 0
                 # Disable dropout
                 model.eval()
                 with torch.no_grad():
@@ -336,16 +361,33 @@ def main():
                         valid_step_loss = criterion(output, target_batch)
                         running_valid_loss += valid_step_loss.item()
                         valid_steps += 1
+                        total_valid_steps += 1
+                        if args.tensorboard:
+                            tb_writer.add_scalar('validation loss',
+                                        running_valid_loss / valid_steps,
+                                        global_step=total_train_steps)
+                # Add train and val loss for whole epoch on same graph
+                if args.tensorboard:
+                    tb_writer.add_scalars('loss per epoch', {
+                        'train loss': running_loss / train_steps,
+                        'val loss': running_valid_loss / valid_steps,
+                        }, epoch)
 
                 avg_valid_loss = running_valid_loss / valid_steps
                 logging.info("Val loss for epoch %s: %s", epoch, avg_valid_loss)
-                if avg_valid_loss < best_valid_loss:
-                    if args.checkpoint_dir is None:
-                        raise IOError("Please provide path to save best performing checkpoint")
-                    else:
+                if args.checkpoint_dir is not None:
+                    if epoch == 0:
                         best_valid_loss = avg_valid_loss
-                        logging.info("Saving new best model, with loss %s", epoch, avg_valid_loss)
-                        save_model(model, "{0}_best".format(checkpoint_dir))
+                        logging.info("Saving new best model from epoch %s, with loss %s", epoch, avg_valid_loss)
+                        save_model(model, "{0}_best".format(args.checkpoint_dir))
+                    else:
+                        if avg_valid_loss < best_valid_loss:
+                            best_valid_loss = avg_valid_loss
+                            logging.info("Saving new best model from epoch %s, with loss %s", epoch, avg_valid_loss)
+                            save_model(model, "{0}_best".format(args.checkpoint_dir))
+
+        if args.tensorboard:
+            tb_writer.close()
 
         # Save final model
         if args.checkpoint_dir is not None:
