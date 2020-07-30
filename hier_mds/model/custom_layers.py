@@ -112,7 +112,7 @@ class MMR(nn.Module):
     MMR for doc i = λ * Sim1(hidden state i, query state)
                     − (1 − λ) * max(Sim2(hidden state i, hidden state j)), j != i
     Reference code from https://github.com/Alex-Fabbri/Multi-News/blob/master/code/Hi_MAP/onmt/encoders/decoder.py
-    However, the code here only slightly follows that implementation
+    However, the code here only roughly follows that implementation.
     """
     def __init__(self, hidden_dim, max_seq_len, lambda_m=.5):
         """Initialize lambda and weights for MMR"""

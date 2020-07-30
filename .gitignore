@@ -1,5 +1,6 @@
 checkpoints/*
 checkpoints_best/*
 make_swarm_job.sh
+run_train.sh
 logs/*
 __pycache__

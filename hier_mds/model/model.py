@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer, TransformerDecoder, TransformerDecoderLayer, MultiheadAttention
 
-from transformers import AutoModelWithLMHead, PreTrainedModel, AlbertConfig, AlbertModel
+from transformers import AutoModelWithLMHead, PreTrainedModel
 
 from .custom_layers import MultiHeadPooling, MMR
 
