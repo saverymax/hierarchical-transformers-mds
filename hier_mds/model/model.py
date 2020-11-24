@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer, TransformerDecoder, TransformerDecoderLayer, MultiheadAttention
 
-from transformers import AutoModelWithLMHead, PreTrainedModel
+from transformers import AutoModelForSeq2SeqLM, PreTrainedModel
 
 from .custom_layers import MultiHeadPooling, MMR
 
@@ -110,7 +110,7 @@ class HierarchicalTransformer(PreTrainedModel):
         Get BERT (or BERT variant weights) for initialization
         Requires use of HuggingFace
         """
-        model = AutoModelWithLMHead.from_pretrained(self.config.hf_model)
+        model = AutoModelForSeq2SeqLM.from_pretrained(self.config.hf_model)
         embeddings =  model.get_input_embeddings()
         return embeddings
 

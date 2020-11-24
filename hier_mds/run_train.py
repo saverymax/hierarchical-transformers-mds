@@ -14,8 +14,9 @@ from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 
 from transformers import AutoTokenizer
+# from transformers import BartTokenizerFast
 
-from hier_mds.data import DatasetRegistry, shift_input_right
+from hier_mds.data import DatasetRegistry, shift_input_right, tokenize_batch
 from hier_mds.model import HierarchicalTransformer, LabelSmoothingLoss
 from hier_mds.model.hierarchical_config import HierarchicalTransformerConfig
 
@@ -91,9 +92,10 @@ def main():
     args = get_args().parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    logging.basicConfig(filename="logs/hier_mds.log", filemode="w", level=logging.DEBUG)
+    logging.basicConfig(filename="{}/hier_mds.log".format(args.log_dir), filemode="w", level=logging.DEBUG)
 
     tokenizer = AutoTokenizer.from_pretrained(args.hf_model)
+    #tokenizer = BartTokenizerFast.from_pretrained('facebook/bart-large')
     eos_token = tokenizer.eos_token
     eos_token_id = tokenizer.eos_token_id
     bos_token = tokenizer.bos_token
@@ -234,6 +236,10 @@ def main():
             running_loss = 0
             train_steps = 0
             for i, batch in enumerate(tqdm(training_data)):
+
+                # Try using lazy tokenization
+                #batch = tokenize_batch(tokenizer, batch)
+
                 #GPUtil.showUtilization()
                 # If not query is provided...
                 if 'query_ids' in batch:
@@ -301,15 +307,14 @@ def main():
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                 optimizer.step() # Update weights
                 # Update learning rate
+                logging.info("total training steps: %s", total_train_steps)
                 for param_group in optimizer.param_groups:
-                    logging.info("param opt group %s", param_group)
-                    logging.info("param opt group %s", param_group['lr'])
-                    lr_update = 1 / math.sqrt(max(total_train_steps, 10**4))
+                    logging.info("param opt group lr %s", param_group['lr'])
+                    lr_update = 1 / math.sqrt(max(total_train_steps + 9500, 10**4))
                     logging.info("New learning rate %s", lr_update)
                     param_group['lr'] = lr_update
                 #scheduler.step() # Update learning rate if appropriate
                 optimizer.zero_grad() # zero the gradient buffers
-                #print("Batch #", )
                 #logging.warning("FORCED EXIT!")
                 #break
                 #sys.exit()

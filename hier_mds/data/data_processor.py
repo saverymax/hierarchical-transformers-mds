@@ -31,6 +31,39 @@ def shift_input_right(input_ids, pad_token_id, eos_token_id):
     return shifted_tokens
 
 
+def tokenize_batch(tokenizer, batch):
+    """
+    Lazy tokenization of batches
+    """
+    print(type(batch['source']))
+    print(len(batch['source']))
+    print(type(batch['source'][0]))
+    print(len(batch['source'][0]))
+    print(type(batch['source'][0][0]))
+    print(len(batch['source'][0][0]))
+    tgt_encodings = tokenizer(batch['target'], return_tensors="pt")
+    query_encodings = tokenizer(batch['query'], return_tensors="pt")
+    src_encodings = [tokenizer(articles, return_tensors="pt") for articles in batch['source']]
+    #src_encodings = self.tokenizer(example_batch['article'])
+    input_ids = []
+    attention_mask = []
+    # Collate the tokenized sets of articles. For each example, there will
+    # be a set of n articles, which looks like
+    # {'input_ids': [article1 ids, ... , articlen ids]}. This needs to be collated
+    # so the input_ids corresponds to the ids for all articles in a batch
+    for i in src_encodings:
+       input_ids.append(i['input_ids'])
+       attention_mask.append(i['attention_mask'])
+
+    return {
+        "source_ids": input_ids,
+        "source_mask": attention_mask,
+        "query_ids": query_encodings['input_ids'],
+        "query_mask": query_encodings['attention_mask'],
+        "target_ids": tgt_encodings['input_ids'],
+        "target_mask": tgt_encodings['attention_mask']}
+
+
 def pad_docs(articles, max_docs, article_key=None):
     """
     General function to pad set of articles to number of max docs
@@ -46,7 +79,7 @@ def pad_docs(articles, max_docs, article_key=None):
     elif len(articles) > max_docs:
         articles = articles[:max_docs]
     assert len(articles) == max_docs
-
+    assert isinstance(articles, list)
     if article_key is not None:
         return {article_key: articles}
     else:
@@ -90,7 +123,7 @@ class DatasetRegistry():
         'bioasq': Bioasq,
         'ebm': EBM,
         'medlineplus': MedlineplusReviews,
-        'cnn_dailymail': CnnDm,
+        'cnn_dailymail': CnnDmLazyTok,
         'eli5': ELI5,
         }
 
@@ -141,7 +174,7 @@ class ELI5():
             columns=columns_to_return)
 
     def fix_urls(self, example):
-        return {'selftext_urls': [], 'answers_urls': []}
+        return {'selftext_urls': {'key': "value"}, 'answers_urls': {'key': "value"}, "title_urls": {'key': "value"}}
 
     def collect_summaries(self, example):
         """Map first answer to summary key"""
@@ -184,7 +217,7 @@ class ELI5():
             "target_mask": tgt_encodings['attention_mask']}
 
 
-class CnnDm():
+class CnnDmLazyTok():
 
     def __init__(self, tokenizer, max_seq_len, max_docs, eos_token, path=None, cache_dir=None, doc_mixing=False, split=None):
         logging.info("Loading CNN Dailymail dataset")
@@ -207,7 +240,61 @@ class CnnDm():
             logging.info("Padding documents with padding token")
             doc_filling = functools.partial(pad_docs, max_docs=self.max_docs, article_key='article')
         #self.dataset['article'][:] = [doc_filling(i) for i in self.dataset['article'][:]]
+        logging.info("Document filling")
         self.dataset = self.dataset.map(doc_filling)
+        logging.info("Inserting query")
+        self.dataset = self.dataset.map(self.add_query)
+        self.dataset = self.dataset.map(self.convert_to_features, batched=True)
+        print(len(self.dataset['source'][:]))
+        # Format dataset to outputs torch.Tensor to train a pytorch model
+        columns_to_return = ['source', 'query', 'target']
+        #columns_to_return = ['target_ids', 'target_mask', 'source_ids', 'source_mask']
+        self.dataset.set_format(type=None,
+            columns=columns_to_return)
+
+    def add_query(self, example):
+        """Add query with just the task string"""
+        return {'query': self.prompt}
+
+    def get_dataset(self):
+        return self.dataset
+
+    def convert_to_features(self, example_batch):
+        """
+        Prepare for pytorch dataloader
+        """
+        return {
+            "target": example_batch['highlights'],
+            "query": example_batch['query'],
+            "source": example_batch['article'],
+            }
+
+class CnnDmPreTok():
+
+    def __init__(self, tokenizer, max_seq_len, max_docs, eos_token, path=None, cache_dir=None, doc_mixing=False, split=None):
+        logging.info("Loading CNN Dailymail dataset")
+        task = "cnn_dailymail"
+        if split == "val":
+            split = "validation"
+        self.prompt = "<TASK> {} <QUESTION> NONE ".format(task)
+        self.dataset = nlp.load_dataset(task, '3.0.0', split="{}[:30%]".format(split), cache_dir=cache_dir)
+        self.tokenizer = tokenizer
+        self.doc_mixing = doc_mixing
+        self.max_docs = max_docs
+        self.eos_token = eos_token
+        #self.dataset = self.dataset.map(lambda example: {'highlights': example['highlights'] + " " + self.eos_token})
+        # As CNN is a single-doc dataset, provide each article to pad or sample docs in a []
+        if self.doc_mixing:
+            logging.info("Mixing in random documents")
+            # Article key required to keep pad_documents applicable to non-hf datasets
+            doc_filling = functools.partial(sample_docs, max_docs=self.max_docs, all_articles=self.dataset['article'], article_key='article')
+        else:
+            logging.info("Padding documents with padding token")
+            doc_filling = functools.partial(pad_docs, max_docs=self.max_docs, article_key='article')
+        #self.dataset['article'][:] = [doc_filling(i) for i in self.dataset['article'][:]]
+        logging.info("Document filling")
+        self.dataset = self.dataset.map(doc_filling)
+        logging.info("Inserting query")
         self.dataset = self.dataset.map(self.add_query)
         self.dataset = self.dataset.map(self.convert_to_features, batched=True)
         print(len(self.dataset['source_ids'][:]))
@@ -256,6 +343,8 @@ class Bioasq(Dataset):
     """Class for Bioasq pytorch dataset"""
 
     def __init__(self, tokenizer, max_seq_len, max_docs, eos_token, path, doc_mixing=False, split=None):
+        if split == "val":
+            raise IOError("Bioasq collection has no validation split")
         file_name = "bioasq/bioasq_{}_collection.json".format(split)
         with open("{0}/{1}".format(path, file_name), "r", encoding="utf-8") as f:
             data = json.load(f)

@@ -1,0 +1,66 @@
+echo query_attn=query_doc_attn-dec_input=local; export XDG_CACHE_HOME=/lscratch/$SLURM_JOB_ID; mkdir -p /data/saveryme/trec_2020/models/hierarchical_mds/predictions/query_attn=query_doc_attn-dec_input=local; mkdir -p /data/saveryme/trec_2020/models/hierarchical_mds/logs/runs/query_attn=query_doc_attn-dec_input=local; \
+    /data/saveryme/conda/envs/hier_mds_env/bin/python -u -m hier_mds.run_train \
+      --train \
+      --training_tasks="mediqa bioasq" \
+      --validate \
+      --validation_tasks="mediqa" \
+      --hf_model="facebook/bart-large" \
+      --data_dir=/data/LHC_kitchensink/tensorflow_datasets_max/downloads/manual \
+      --cache_dir=/lscratch/$SLURM_JOB_ID \
+      --checkpoint_dir=/data/saveryme/trec_2020/models/hierarchical_mds/checkpoints/query_attn=query_doc_attn-dec_input=local \
+      --prediction_dir= \
+      --init_checkpoint=None \
+      --seed=42 \
+      --max_docs=5 \
+      --enc_hidden_dim=256 \
+      --dec_hidden_dim=256 \
+      --ffw_dim=1024 \
+      --max_seq_len=256 \
+      --epochs=200 \
+      --batch_size=16 \
+      --eval_batches=10 \
+      --local_enc_layers=2 \
+      --global_enc_layers=2 \
+      --dec_layers=2 \
+      --n_att_heads=4 \
+      --decoder_attn_mask \
+      --dec_mem_input="local" \
+      --tensorboard \
+      --log_dir=/data/saveryme/trec_2020/models/hierarchical_mds/logs/runs/query_attn=query_doc_attn-dec_input=local \
+      --init_bert_weights \
+      --multi_head_pooling \
+      --doc_mixing \
+      --query_doc_attn
+echo query_attn=mmr-dec_input=local; export XDG_CACHE_HOME=/lscratch/$SLURM_JOB_ID; mkdir -p /data/saveryme/trec_2020/models/hierarchical_mds/predictions/query_attn=mmr-dec_input=local; mkdir -p /data/saveryme/trec_2020/models/hierarchical_mds/logs/runs/query_attn=mmr-dec_input=local; \
+    /data/saveryme/conda/envs/hier_mds_env/bin/python -u -m hier_mds.run_train \
+      --train \
+      --training_tasks="mediqa bioasq" \
+      --validate \
+      --validation_tasks="mediqa" \
+      --hf_model="facebook/bart-large" \
+      --data_dir=/data/LHC_kitchensink/tensorflow_datasets_max/downloads/manual \
+      --cache_dir=/lscratch/$SLURM_JOB_ID \
+      --checkpoint_dir=/data/saveryme/trec_2020/models/hierarchical_mds/checkpoints/query_attn=mmr-dec_input=local \
+      --prediction_dir= \
+      --init_checkpoint=None \
+      --seed=42 \
+      --max_docs=5 \
+      --enc_hidden_dim=256 \
+      --dec_hidden_dim=256 \
+      --ffw_dim=1024 \
+      --max_seq_len=256 \
+      --epochs=200 \
+      --batch_size=16 \
+      --eval_batches=10 \
+      --local_enc_layers=2 \
+      --global_enc_layers=2 \
+      --dec_layers=2 \
+      --n_att_heads=4 \
+      --decoder_attn_mask \
+      --dec_mem_input="local" \
+      --tensorboard \
+      --log_dir=/data/saveryme/trec_2020/models/hierarchical_mds/logs/runs/query_attn=mmr-dec_input=local \
+      --init_bert_weights \
+      --multi_head_pooling \
+      --doc_mixing \
+      --mmr
